@@ -1,0 +1,97 @@
+#!/usr/bin/python
+# -*- coding: utf-8 -*-
+import os, sys, getopt, logging, time, fcntl
+
+def syncs3(source, bucket_name):
+    print "Syncing EBS to S3 ..."
+    os.system("aws s3 sync " + source + " s3://" + bucket_name + " --delete")    
+
+def sendmail(mail, subject, message):
+    os.system("aws ses send-email --to " + mail + " --text " + message + " --from " + mail  + " --subject " + subject)
+
+def main():
+    source_dir = ''
+    dest_dir = ''
+    exclude_dir = ''
+    ebs_dir = ''
+    mount_val = '1'
+    remove = ''
+    sync = 'false'
+    bucket = ''
+
+    try:
+        if len(sys.argv) < 9:
+            print "Usage: efs-backup.py -s <source> -d <destination> -e <exclude_directory> -m <ebs_device>"
+            sys.exit(2)
+        else:
+            opts, args = getopt.getopt(sys.argv[1:],"hs:d:e:m:rz:")
+    except getopt.GetoptError:
+        print "Usage: efs-backup.py -s <source> -d <destination> -e <exclude_directory> -m <ebs_device>"
+        sys.exit(2)
+    for opt, arg in opts:
+        if opt == '-h':
+            print "Usage: efs-backup.py -s <source> -d <destination> -e <exclude_directory> -m <ebs_device>"
+            sys.exit()
+        elif opt == '-s':
+            source_dir = arg
+        elif opt == '-d':
+            dest_dir = arg
+        elif opt == '-e':
+            exclude_dir = exclude_dir + " --exclude " + arg
+        elif opt == '-m':
+            ebs_dir = arg
+        elif opt == '-r':
+            remove = " --delete"
+        elif opt == '-z':
+            sync = "true"
+            bucket = arg
+    if ebs_dir == '' or source_dir == '' or dest_dir == '' or exclude_dir == '':
+        print "Missing parameters"
+        print "Usage: efs-backup.py -s <source> -d <destination> -e <exclude_directory> -m <ebs_device>"
+        sys.exit(2)
+    print "Source dir:", source_dir
+    print "Destination dir:", dest_dir
+
+    try:
+        if not os.path.exists(dest_dir):
+            sys.exit("Destination directory does not exist")
+        elif not os.path.ismount(dest_dir):
+            print "Mounting " + ebs_dir + " " + dest_dir + "..."
+            mount = os.system("mount " + ebs_dir + " " + dest_dir)
+            if mount != 0:
+                sys.exit("Error mounting device")
+            os.system("df -h")
+        else:
+            print "Volume previously mounted"
+        print "Syncing " + source_dir + " with " + dest_dir
+        print "rsync -ahv --progress " + source_dir + " " + dest_dir + exclude_dir + remove
+        sys.stdout.flush()
+        os.system("rsync -ahv --progress " + source_dir + " " + dest_dir + exclude_dir + remove)
+        print "Proceso terminado"
+        time.sleep(10)
+        if sync:
+            print bucket
+            syncs3(dest_dir, bucket)
+        os.system("umount " + dest_dir)
+        os.system("df -h")
+        sendmail("devops_digital@artear.com", "Content of EFS succesfully synced", "Content synced")
+    except Exception as e:
+        print "Ha ocurrido un error"
+        print (e)
+        sendmail("devops_digital@artear.com", "EFS sync failed", "Content sync failed")
+
+if __name__ == "__main__":
+    try:
+        print os.environ['AWS_DEFAULT_REGION']
+        file_path = '/var/lock/efs-backup.py'
+        file_handle = open(file_path, 'w')
+       
+        fcntl.lockf(file_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        start_time = time.time()
+        print time.strftime("%a, %d %b %Y %H:%M:%S", time.localtime())
+        main()
+        print("--- %s mins ---" % ((time.time() - start_time) / 60))
+    except IOError:
+        print "The process instance is running! Exiting now"
+        sys.exit(1)
+
